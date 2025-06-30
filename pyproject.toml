@@ -27,8 +27,8 @@ classifiers = [
 
 dependencies = [
     # Core AI and OpenAI Agent dependencies
-    "openai>=1.37.1",
-    "openai-agents[litellm]==0.0.14",
+    "openai>=1.66.0",
+    "openai-agents[litellm]==0.0.16",
     "langchain>=0.2.11",
     "langchain-openai>=0.1.19",
     "langchain-community>=0.2.10",

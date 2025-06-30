@@ -15,7 +15,9 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 # Import from the installed openai-agents package  
-from agents import Agent, Runner, gen_trace_id, trace, ModelSettings
+from agents import Agent, Runner, gen_trace_id, trace, ModelSettings, set_default_openai_api
+
+set_default_openai_api("responses") 
 
 # Try to import MCP - graceful fallback if not available
 try:
@@ -64,15 +66,21 @@ class EnhancedExecutor(BaseExecutor):
         )
         
         # Initialize MCP Server (if available)
+        self.mcp_server = None
         if MCP_AVAILABLE and MCPServerSse:
-            self.mcp_server = MCPServerSse(
-                name=self.mcp_config.name,
-                params={"url": self.mcp_config.url},
-                cache_tools_list=self.mcp_config.enable_cache,
-                client_session_timeout_seconds=self.mcp_config.timeout,
-            )
+            try:
+                self.mcp_server = MCPServerSse(
+                    name=self.mcp_config.name,
+                    params={"url": self.mcp_config.url},
+                    cache_tools_list=self.mcp_config.enable_cache,
+                    client_session_timeout_seconds=self.mcp_config.timeout,
+                )
+                print(f"✅ MCP server configured at: {self.mcp_config.url}")
+            except Exception as e:
+                self.logger.warning(f"Failed to initialize MCP server at {self.mcp_config.url}: {e}")
+                print("⚠️  MCP server initialization failed - using basic analysis mode")
+                self.mcp_server = None
         else:
-            self.mcp_server = None
             print("⚠️  MCP server not available - using basic analysis mode")
         
         # OpenAI API key
@@ -129,6 +137,9 @@ class EnhancedExecutor(BaseExecutor):
             
             You have access to MCP tools that can help you gather market data, news, and analysis.
             Use these tools to make informed trading decisions.
+            Do NOT promise to call a  MCP tools later. If a function call is required, emit it now; otherwise respond normally.
+
+
             
             When analyzing a market:
             1. Gather relevant external data using available tools
@@ -180,11 +191,14 @@ class EnhancedExecutor(BaseExecutor):
             Use available MCP tools to gather relevant information, then provide your analysis.
             """
             
-            # Run agent (with or without MCP server)
+            # Try MCP mode first, fall back to basic mode if needed
+            mcp_success = False
+            result = None
+            
             if self.mcp_server:
-                async with self.mcp_server:
-                    with trace(workflow_name="Polymarket Enhanced Analysis", trace_id=self.trace_id):
-                        try:
+                try:
+                    async with self.mcp_server:
+                        with trace(workflow_name="Polymarket Enhanced Analysis", trace_id=self.trace_id):
                             # Execute agent with retry logic
                             result = await self._execute_with_retry(
                                 Runner.run,
@@ -192,41 +206,45 @@ class EnhancedExecutor(BaseExecutor):
                                 input=analysis_request,
                                 context=self.agent_context,
                             )
+                            mcp_success = True
                             
-                            # Update context with any new values from result
-                            if hasattr(result, "context") and result.context:
-                                self.agent_context.update(result.context)
-                            
-                            # Parse and return the trading recommendation
-                            return self._parse_trading_recommendation(result.final_output)
-                            
-                        except Exception as e:
-                            self.logger.error(f"Agent execution failed: {e}")
-                            raise
-            else:
-                # Basic mode without MCP
+                except Exception as mcp_error:
+                    self.logger.warning(f"MCP server failed: {mcp_error}, falling back to basic analysis")
+                    print("⚠️  MCP server failed - falling back to basic analysis")
+                    mcp_success = False
+            
+            # If MCP failed or not available, use basic mode
+            if not mcp_success:
+                # Create agent without MCP tools for basic mode
+                agent_basic = Agent(
+                    name="Polymarket Trading Analyst",
+                    instructions=instructions,
+                    mcp_servers=[],  # No MCP servers
+                    model=self.agent_config.model,
+                    model_settings=model_settings,
+                )
+                
                 with trace(workflow_name="Polymarket Basic Analysis", trace_id=self.trace_id):
-                    try:
-                        # Execute agent with retry logic (no MCP tools)
-                        result = await self._execute_with_retry(
-                            Runner.run,
-                            starting_agent=agent,
-                            input=analysis_request,
-                            context=self.agent_context,
-                        )
-                        
-                        # Update context with any new values from result
-                        if hasattr(result, "context") and result.context:
-                            self.agent_context.update(result.context)
-                        
-                        # Parse and return the trading recommendation
-                        recommendation = self._parse_trading_recommendation(result.final_output)
-                        recommendation["analysis_type"] = "basic_ai_no_mcp"
-                        return recommendation
-                        
-                    except Exception as e:
-                        self.logger.error(f"Agent execution failed: {e}")
-                        raise
+                    # Execute agent with retry logic (no MCP tools)
+                    result = await self._execute_with_retry(
+                        Runner.run,
+                        starting_agent=agent_basic,
+                        input=analysis_request,
+                        context=self.agent_context,
+                    )
+            
+            # Process results
+            if result:
+                # Update context with any new values from result
+                if hasattr(result, "context") and result.context:
+                    self.agent_context.update(result.context)
+                
+                # Parse and return the trading recommendation
+                recommendation = self._parse_trading_recommendation(result.final_output)
+                recommendation["analysis_type"] = "enhanced_ai_mcp" if mcp_success else "basic_ai_no_mcp"
+                return recommendation
+            else:
+                raise Exception("No result from agent execution")
                         
         except Exception as e:
             self.logger.error(f"Error in enhanced market analysis: {e}")

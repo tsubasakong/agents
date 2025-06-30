@@ -25,7 +25,7 @@ class Trader:
         )
         
         agent_config = AgentConfig(
-            model="gpt-4.1",
+            model="gpt-4.1-mini",
             temperature=0.1,  # Will be ignored for o3 models - see enhanced_executor.py line ~185
             max_tokens=50000,
             timeout=180,
