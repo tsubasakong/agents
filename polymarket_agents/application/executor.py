@@ -10,11 +10,11 @@ from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
-from agents.polymarket.gamma import GammaMarketClient as Gamma
-from agents.connectors.chroma import PolymarketRAG as Chroma
-from agents.utils.objects import SimpleEvent, SimpleMarket
-from agents.application.prompts import Prompter
-from agents.polymarket.polymarket import Polymarket
+from polymarket_agents.polymarket.gamma import GammaMarketClient as Gamma
+from polymarket_agents.connectors.chroma import PolymarketRAG as Chroma
+from polymarket_agents.utils.objects import SimpleEvent, SimpleMarket
+from polymarket_agents.application.prompts import Prompter
+from polymarket_agents.polymarket.polymarket import Polymarket
 
 def retain_keys(data, keys_to_retain):
     if isinstance(data, dict):
@@ -128,6 +128,11 @@ class Executor:
         return result.content
 
     def filter_events_with_rag(self, events: "list[SimpleEvent]") -> str:
+        # Handle empty events list
+        if not events:
+            print("Warning: Empty events list provided to filter_events_with_rag()")
+            return []
+            
         prompt = self.prompter.filter_events()
         print()
         print("... prompting ... ", prompt)
@@ -137,17 +142,35 @@ class Executor:
     def map_filtered_events_to_markets(
         self, filtered_events: "list[SimpleEvent]"
     ) -> "list[SimpleMarket]":
+        # Handle empty filtered_events list
+        if not filtered_events:
+            print("Warning: Empty filtered_events list provided to map_filtered_events_to_markets()")
+            return []
+            
         markets = []
         for e in filtered_events:
-            data = json.loads(e[0].json())
-            market_ids = data["metadata"]["markets"].split(",")
-            for market_id in market_ids:
-                market_data = self.gamma.get_market(market_id)
-                formatted_market_data = self.polymarket.map_api_to_market(market_data)
-                markets.append(formatted_market_data)
+            try:
+                data = json.loads(e[0].json())
+                market_ids = data["metadata"]["markets"].split(",")
+                for market_id in market_ids:
+                    market_data = self.gamma.get_market(market_id)
+                    if not market_data:  # Handle None or empty dict
+                        print(f"Warning: No market data returned for market_id {market_id}")
+                        continue
+                        
+                    formatted_market_data = self.polymarket.map_api_to_market(market_data)
+                    if formatted_market_data:  # Check if map_api_to_market returned a valid object
+                        markets.append(formatted_market_data)
+            except Exception as ex:
+                print(f"Error processing event in map_filtered_events_to_markets: {ex}")
         return markets
 
     def filter_markets(self, markets) -> "list[tuple]":
+        # Handle empty markets list
+        if not markets:
+            print("Warning: Empty markets list provided to filter_markets()")
+            return []
+            
         prompt = self.prompter.filter_markets()
         print()
         print("... prompting ... ", prompt)
@@ -155,44 +178,79 @@ class Executor:
         return self.chroma.markets(markets, prompt)
 
     def source_best_trade(self, market_object) -> str:
-        market_document = market_object[0].dict()
-        market = market_document["metadata"]
-        outcome_prices = ast.literal_eval(market["outcome_prices"])
-        outcomes = ast.literal_eval(market["outcomes"])
-        question = market["question"]
-        description = market_document["page_content"]
+        # Handle empty or invalid market_object
+        if not market_object or not isinstance(market_object, list) or len(market_object) == 0:
+            print("Warning: Empty or invalid market_object provided to source_best_trade()")
+            return "No trade available, 0.0"
+            
+        try:
+            market_document = market_object[0].dict()
+            market = market_document["metadata"]
+            outcome_prices = ast.literal_eval(market["outcome_prices"])
+            outcomes = ast.literal_eval(market["outcomes"])
+            question = market["question"]
+            description = market_document["page_content"]
 
-        prompt = self.prompter.superforecaster(question, description, outcomes)
-        print()
-        print("... prompting ... ", prompt)
-        print()
-        result = self.llm.invoke(prompt)
-        content = result.content
+            prompt = self.prompter.superforecaster(question, description, outcomes)
+            print()
+            print("... prompting ... ", prompt)
+            print()
+            result = self.llm.invoke(prompt)
+            content = result.content
 
-        print("result: ", content)
-        print()
-        prompt = self.prompter.one_best_trade(content, outcomes, outcome_prices)
-        print("... prompting ... ", prompt)
-        print()
-        result = self.llm.invoke(prompt)
-        content = result.content
+            print("result: ", content)
+            print()
+            prompt = self.prompter.one_best_trade(content, outcomes, outcome_prices)
+            print("... prompting ... ", prompt)
+            print()
+            result = self.llm.invoke(prompt)
+            content = result.content
 
-        print("result: ", content)
-        print()
-        return content
+            print("result: ", content)
+            return content
+        except Exception as e:
+            print(f"Error in source_best_trade: {e}")
+            return "No trade available, 0.0"
 
     def format_trade_prompt_for_execution(self, best_trade: str) -> float:
-        data = best_trade.split(",")
-        # price = re.findall("\d+\.\d+", data[0])[0]
-        size = re.findall("\d+\.\d+", data[1])[0]
-        usdc_balance = self.polymarket.get_usdc_balance()
-        return float(size) * usdc_balance
+        try:
+            # Check if best_trade is valid
+            if not best_trade or "No trade available" in best_trade:
+                print("Warning: No valid trade available in format_trade_prompt_for_execution()")
+                return 0.0
+                
+            data = best_trade.split(",")
+            if len(data) < 2:
+                print(f"Warning: Invalid best_trade format: {best_trade}")
+                return 0.0
+                
+            # Extract size using regex
+            size_matches = re.findall("\d+\.\d+", data[1])
+            if not size_matches:
+                print(f"Warning: Could not extract size from best_trade: {best_trade}")
+                return 0.0
+                
+            size = size_matches[0]
+            usdc_balance = self.polymarket.get_usdc_balance()
+            return float(size) * usdc_balance
+        except Exception as e:
+            print(f"Error in format_trade_prompt_for_execution: {e}")
+            return 0.0
 
     def source_best_market_to_create(self, filtered_markets) -> str:
-        prompt = self.prompter.create_new_market(filtered_markets)
-        print()
-        print("... prompting ... ", prompt)
-        print()
-        result = self.llm.invoke(prompt)
-        content = result.content
-        return content
+        # Handle empty or invalid filtered_markets
+        if not filtered_markets:
+            print("Warning: Empty filtered_markets provided to source_best_market_to_create()")
+            return "No market to create"
+            
+        try:
+            prompt = self.prompter.create_new_market(filtered_markets)
+            print()
+            print("... prompting ... ", prompt)
+            print()
+            result = self.llm.invoke(prompt)
+            content = result.content
+            return content
+        except Exception as e:
+            print(f"Error in source_best_market_to_create: {e}")
+            return "No market to create"

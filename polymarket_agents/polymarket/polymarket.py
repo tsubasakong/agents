@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 
 from web3 import Web3
 from web3.constants import MAX_INT
-from web3.middleware import geth_poa_middleware
+from web3.middleware import ExtraDataToPOAMiddleware
 
 import httpx
 from py_clob_client.client import ClobClient
@@ -28,9 +28,10 @@ from py_clob_client.clob_types import (
 )
 from py_clob_client.order_builder.constants import BUY
 
-from agents.utils.objects import SimpleMarket, SimpleEvent
+from polymarket_agents.utils.objects import SimpleMarket, SimpleEvent
 
-load_dotenv()
+# Load .env file from the project root directory
+load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), '.env'))
 
 
 class Polymarket:
@@ -57,7 +58,7 @@ class Polymarket:
         self.ctf_address = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
 
         self.web3 = Web3(Web3.HTTPProvider(self.polygon_rpc))
-        self.web3.middleware_onion.inject(geth_poa_middleware, layer=0)
+        self.web3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
 
         self.usdc = self.web3.eth.contract(
             address=self.usdc_address, abi=self.erc20_approve
@@ -188,89 +189,184 @@ class Polymarket:
 
     def get_all_markets(self) -> "list[SimpleMarket]":
         markets = []
-        res = httpx.get(self.gamma_markets_endpoint)
-        if res.status_code == 200:
-            for market in res.json():
-                try:
-                    market_data = self.map_api_to_market(market)
-                    markets.append(SimpleMarket(**market_data))
-                except Exception as e:
-                    print(e)
-                    pass
+        try:
+            # Optimal parameters for fetching tradeable markets based on API documentation
+            params = {
+                "active": "true",          # Must be active
+                "closed": "false",         # Must not be closed
+                "enableOrderBook": "true", # CRITICAL: Must be tradeable via CLOB
+                "limit": "200"             # Fetch more markets to filter locally
+            }
+            res = httpx.get(self.gamma_markets_endpoint, params=params)
+            if res.status_code == 200:
+                data = res.json()
+                if not data:
+                    print("Warning: API returned empty data in get_all_markets()")
+                    return []
+                    
+                for market in data:
+                    try:
+                        market_data = self.map_api_to_market(market)
+                        markets.append(SimpleMarket(**market_data))
+                    except Exception as e:
+                        print(f"Error processing market: {e}")
+                        pass
+            else:
+                print(f"Warning: API returned status code {res.status_code} in get_all_markets()")
+        except Exception as e:
+            print(f"Error in get_all_markets: {e}")
         return markets
 
     def filter_markets_for_trading(self, markets: "list[SimpleMarket]"):
+        # Handle empty markets list
+        if not markets:
+            print("Warning: Empty markets list provided to filter_markets_for_trading()")
+            return []
+            
         tradeable_markets = []
         for market in markets:
-            if market.active:
-                tradeable_markets.append(market)
+            # Filter for truly tradeable markets:
+            # - Must be active
+            # - Must have enableOrderBook (tradeable via CLOB)
+            # - Must have reasonable spread (< 10%)
+            # - Must have valid prices (not 0)
+            # - Should have some liquidity
+            try:
+                # Parse outcome prices from string representation
+                import ast
+                prices = ast.literal_eval(market.outcome_prices)
+                has_valid_prices = any(float(p) > 0 for p in prices)
+                
+                if (market.active and 
+                    market.enableOrderBook and  # Must be tradeable via CLOB
+                    market.spread < 0.1 and  # Max 10% spread
+                    has_valid_prices and
+                    market.liquidity > 1000):  # Minimum liquidity threshold $1000
+                    tradeable_markets.append(market)
+            except Exception as e:
+                # Skip markets with parsing errors
+                continue
+                
         return tradeable_markets
 
     def get_market(self, token_id: str) -> SimpleMarket:
-        params = {"clob_token_ids": token_id}
-        res = httpx.get(self.gamma_markets_endpoint, params=params)
-        if res.status_code == 200:
-            data = res.json()
-            market = data[0]
-            return self.map_api_to_market(market, token_id)
+        try:
+            params = {"clob_token_ids": token_id}
+            res = httpx.get(self.gamma_markets_endpoint, params=params)
+            if res.status_code == 200:
+                data = res.json()
+                if not data:
+                    print(f"Warning: API returned empty data for token_id {token_id} in get_market()")
+                    return None
+                    
+                market = data[0]
+                return self.map_api_to_market(market, token_id)
+            else:
+                print(f"Warning: API returned status code {res.status_code} in get_market() for token_id {token_id}")
+                return None
+        except Exception as e:
+            print(f"Error in get_market for token_id {token_id}: {e}")
+            return None
 
     def map_api_to_market(self, market, token_id: str = "") -> SimpleMarket:
-        market = {
+        # Handle volume field which might be string or number
+        volume_val = market.get("volume", 0)
+        if isinstance(volume_val, str):
+            try:
+                volume_val = float(volume_val)
+            except:
+                volume_val = 0.0
+                
+        market_data = {
             "id": int(market["id"]),
             "question": market["question"],
-            "end": market["endDate"],
-            "description": market["description"],
-            "active": market["active"],
+            "end": market.get("endDate", ""),
+            "description": market.get("description", ""),
+            "active": market.get("active", False),
             # "deployed": market["deployed"],
-            "funded": market["funded"],
-            "rewardsMinSize": float(market["rewardsMinSize"]),
-            "rewardsMaxSpread": float(market["rewardsMaxSpread"]),
-            # "volume": float(market["volume"]),
-            "spread": float(market["spread"]),
-            "outcomes": str(market["outcomes"]),
-            "outcome_prices": str(market["outcomePrices"]),
-            "clob_token_ids": str(market["clobTokenIds"]),
+            "funded": market.get("funded", False),
+            "rewardsMinSize": float(market.get("rewardsMinSize", 0)),
+            "rewardsMaxSpread": float(market.get("rewardsMaxSpread", 0)),
+            # Add volume back as it's useful for filtering
+            "volume": volume_val,
+            "spread": float(market.get("spread", 1.0)),
+            "outcomes": str(market.get("outcomes", "[]")),
+            "outcome_prices": str(market.get("outcomePrices", "[]")),
+            "clob_token_ids": str(market.get("clobTokenIds", "[]")),
         }
+        # Store additional useful fields for filtering
+        market_data["enableOrderBook"] = market.get("enableOrderBook", False)
+        market_data["liquidity"] = float(market.get("liquidityClob", 0) or market.get("liquidity", 0) or 0)
+        
         if token_id:
-            market["clob_token_ids"] = token_id
-        return market
+            market_data["clob_token_ids"] = token_id
+        return market_data
 
     def get_all_events(self) -> "list[SimpleEvent]":
         events = []
-        res = httpx.get(self.gamma_events_endpoint)
-        if res.status_code == 200:
-            print(len(res.json()))
-            for event in res.json():
-                try:
-                    print(1)
-                    event_data = self.map_api_to_event(event)
-                    events.append(SimpleEvent(**event_data))
-                except Exception as e:
-                    print(e)
-                    pass
+        try:
+            # Fetch only active, non-closed events
+            params = {
+                "active": "true",
+                "closed": "false",
+                "limit": "100"
+            }
+            res = httpx.get(self.gamma_events_endpoint, params=params)
+            if res.status_code == 200:
+                data = res.json()
+                if not data:
+                    print("Warning: API returned empty data in get_all_events()")
+                    return []
+                    
+                print(len(data))
+                for event in data:
+                    try:
+                        print(1)
+                        event_data = self.map_api_to_event(event)
+                        events.append(SimpleEvent(**event_data))
+                    except Exception as e:
+                        print(f"Error processing event: {e}")
+                        pass
+            else:
+                print(f"Warning: API returned status code {res.status_code} in get_all_events()")
+        except Exception as e:
+            print(f"Error in get_all_events: {e}")
         return events
 
     def map_api_to_event(self, event) -> SimpleEvent:
-        description = event["description"] if "description" in event.keys() else ""
+        description = event.get("description", "")
+        # Handle markets field - it's an array of market objects
+        markets = event.get("markets", [])
+        market_ids = []
+        if markets and isinstance(markets, list):
+            for market in markets:
+                if isinstance(market, dict) and "id" in market:
+                    market_ids.append(market["id"])
+                    
         return {
             "id": int(event["id"]),
-            "ticker": event["ticker"],
-            "slug": event["slug"],
-            "title": event["title"],
+            "ticker": event.get("ticker", ""),
+            "slug": event.get("slug", ""),
+            "title": event.get("title", ""),
             "description": description,
-            "active": event["active"],
-            "closed": event["closed"],
-            "archived": event["archived"],
-            "new": event["new"],
-            "featured": event["featured"],
-            "restricted": event["restricted"],
-            "end": event["endDate"],
-            "markets": ",".join([x["id"] for x in event["markets"]]),
+            "active": event.get("active", False),
+            "closed": event.get("closed", True),
+            "archived": event.get("archived", False),
+            "new": event.get("new", False),
+            "featured": event.get("featured", False),
+            "restricted": event.get("restricted", False),
+            "end": event.get("endDate", ""),
+            "markets": ",".join(market_ids),
         }
 
     def filter_events_for_trading(
         self, events: "list[SimpleEvent]"
     ) -> "list[SimpleEvent]":
+        # Handle empty events list
+        if not events:
+            print("Warning: Empty events list provided to filter_events_for_trading()")
+            return []
+            
         tradeable_events = []
         for event in events:
             if (

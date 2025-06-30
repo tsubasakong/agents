@@ -6,8 +6,8 @@ from langchain_openai import OpenAIEmbeddings
 from langchain_community.document_loaders import JSONLoader
 from langchain_community.vectorstores.chroma import Chroma
 
-from agents.polymarket.gamma import GammaMarketClient
-from agents.utils.objects import SimpleEvent, SimpleMarket
+from polymarket_agents.polymarket.gamma import GammaMarketClient
+from polymarket_agents.utils.objects import SimpleEvent, SimpleMarket
 
 
 class PolymarketRAG:
@@ -55,6 +55,11 @@ class PolymarketRAG:
         return response_docs
 
     def events(self, events: "list[SimpleEvent]", prompt: str) -> "list[tuple]":
+        # Handle empty events list
+        if not events:
+            print("Warning: Empty events list provided to PolymarketRAG.events()")
+            return []
+            
         # create local json file
         local_events_directory: str = "./local_db_events"
         if not os.path.isdir(local_events_directory):
@@ -90,13 +95,40 @@ class PolymarketRAG:
         return local_db.similarity_search_with_score(query=prompt)
 
     def markets(self, markets: "list[SimpleMarket]", prompt: str) -> "list[tuple]":
+        # Handle empty markets list
+        if not markets:
+            print("Warning: Empty markets list provided to PolymarketRAG.markets()")
+            return []
+            
         # create local json file
         local_events_directory: str = "./local_db_markets"
         if not os.path.isdir(local_events_directory):
             os.mkdir(local_events_directory)
         local_file_path = f"{local_events_directory}/markets.json"
+        
+        # Convert SimpleMarket objects to dictionaries for JSON serialization
+        markets_dict = []
+        for market in markets:
+            if hasattr(market, 'dict'):
+                markets_dict.append(market.dict())
+            elif hasattr(market, '__dict__'):
+                markets_dict.append(market.__dict__)
+            else:
+                # Fallback: manually create dict from known attributes
+                markets_dict.append({
+                    "id": market.id,
+                    "question": market.question,
+                    "description": market.description,
+                    "outcomes": market.outcomes,
+                    "outcome_prices": market.outcome_prices,
+                    "clob_token_ids": market.clob_token_ids,
+                    "spread": market.spread,
+                    "liquidity": getattr(market, 'liquidity', 0),
+                    "volume": getattr(market, 'volume', 0)
+                })
+        
         with open(local_file_path, "w+") as output_file:
-            json.dump(markets, output_file)
+            json.dump(markets_dict, output_file)
 
         # create vector db
         def metadata_func(record: dict, metadata: dict) -> dict:

@@ -1,0 +1,1 @@
+# This file makes the polymarket directory a Python package 

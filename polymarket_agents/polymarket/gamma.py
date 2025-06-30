@@ -1,8 +1,8 @@
 import httpx
 import json
 
-from agents.polymarket.polymarket import Polymarket
-from agents.utils.objects import Market, PolymarketEvent, ClobReward, Tag
+from polymarket_agents.polymarket.polymarket import Polymarket
+from polymarket_agents.utils.objects import Market, PolymarketEvent, ClobReward, Tag
 
 
 class GammaMarketClient:
@@ -76,22 +76,35 @@ class GammaMarketClient:
                 'Cannot use "parse_pydantic" and "local_file" params simultaneously.'
             )
 
-        response = httpx.get(self.gamma_markets_endpoint, params=querystring_params)
-        if response.status_code == 200:
-            data = response.json()
-            if local_file_path is not None:
-                with open(local_file_path, "w+") as out_file:
-                    json.dump(data, out_file)
-            elif not parse_pydantic:
-                return data
+        try:
+            response = httpx.get(self.gamma_markets_endpoint, params=querystring_params)
+            if response.status_code == 200:
+                data = response.json()
+                if not data:
+                    print("Warning: API returned empty data in get_markets()")
+                    return []
+                    
+                if local_file_path is not None:
+                    with open(local_file_path, "w+") as out_file:
+                        json.dump(data, out_file)
+                elif not parse_pydantic:
+                    return data
+                else:
+                    markets: list[Market] = []
+                    for market_object in data:
+                        try:
+                            market = self.parse_pydantic_market(market_object)
+                            if market:
+                                markets.append(market)
+                        except Exception as e:
+                            print(f"Error parsing market: {e}")
+                    return markets
             else:
-                markets: list[Market] = []
-                for market_object in data:
-                    markets.append(self.parse_pydantic_market(market_object))
-                return markets
-        else:
-            print(f"Error response returned from api: HTTP {response.status_code}")
-            raise Exception()
+                print(f"Error response returned from API: HTTP {response.status_code}")
+                return []
+        except Exception as e:
+            print(f"Error in get_markets: {e}")
+            return []
 
     def get_events(
         self, querystring_params={}, parse_pydantic=False, local_file_path=None
@@ -101,21 +114,35 @@ class GammaMarketClient:
                 'Cannot use "parse_pydantic" and "local_file" params simultaneously.'
             )
 
-        response = httpx.get(self.gamma_events_endpoint, params=querystring_params)
-        if response.status_code == 200:
-            data = response.json()
-            if local_file_path is not None:
-                with open(local_file_path, "w+") as out_file:
-                    json.dump(data, out_file)
-            elif not parse_pydantic:
-                return data
+        try:
+            response = httpx.get(self.gamma_events_endpoint, params=querystring_params)
+            if response.status_code == 200:
+                data = response.json()
+                if not data:
+                    print("Warning: API returned empty data in get_events()")
+                    return []
+                    
+                if local_file_path is not None:
+                    with open(local_file_path, "w+") as out_file:
+                        json.dump(data, out_file)
+                elif not parse_pydantic:
+                    return data
+                else:
+                    events: list[PolymarketEvent] = []
+                    for market_event_obj in data:
+                        try:
+                            event = self.parse_event(market_event_obj)
+                            if event:
+                                events.append(event)
+                        except Exception as e:
+                            print(f"Error parsing event: {e}")
+                    return events
             else:
-                events: list[PolymarketEvent] = []
-                for market_event_obj in data:
-                    events.append(self.parse_event(market_event_obj))
-                return events
-        else:
-            raise Exception()
+                print(f"Error response returned from API: HTTP {response.status_code}")
+                return []
+        except Exception as e:
+            print(f"Error in get_events: {e}")
+            return []
 
     def get_all_markets(self, limit=2) -> "list[Market]":
         return self.get_markets(querystring_params={"limit": limit})
@@ -175,10 +202,22 @@ class GammaMarketClient:
         )
 
     def get_market(self, market_id: int) -> dict():
-        url = self.gamma_markets_endpoint + "/" + str(market_id)
-        print(url)
-        response = httpx.get(url)
-        return response.json()
+        try:
+            url = self.gamma_markets_endpoint + "/" + str(market_id)
+            print(url)
+            response = httpx.get(url)
+            if response.status_code == 200:
+                data = response.json()
+                if not data:
+                    print(f"Warning: API returned empty data for market_id {market_id} in get_market()")
+                    return {}
+                return data
+            else:
+                print(f"Warning: API returned status code {response.status_code} in get_market() for market_id {market_id}")
+                return {}
+        except Exception as e:
+            print(f"Error in get_market for market_id {market_id}: {e}")
+            return {}
 
 
 if __name__ == "__main__":

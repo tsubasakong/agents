@@ -1,12 +1,17 @@
 import typer
 from devtools import pprint
 
-from agents.polymarket.polymarket import Polymarket
-from agents.connectors.chroma import PolymarketRAG
-from agents.connectors.news import News
-from agents.application.trade import Trader
-from agents.application.executor import Executor
-from agents.application.creator import Creator
+from polymarket_agents.polymarket.polymarket import Polymarket
+from polymarket_agents.connectors.chroma import PolymarketRAG
+from polymarket_agents.connectors.news import News
+from polymarket_agents.application.trade import Trader
+from polymarket_agents.application.executor import Executor
+from polymarket_agents.application.creator import Creator
+from polymarket_agents.application.enhanced_executor import EnhancedExecutor, run_enhanced_analysis
+from polymarket_agents.utils.objects import SimpleMarket
+
+import asyncio
+import os
 
 app = typer.Typer()
 polymarket = Polymarket()
@@ -15,15 +20,22 @@ polymarket_rag = PolymarketRAG()
 
 
 @app.command()
-def get_all_markets(limit: int = 5, sort_by: str = "spread") -> None:
+def get_all_markets(limit: int = 5, sort_by: str = "liquidity") -> None:
     """
     Query Polymarket's markets
     """
     print(f"limit: int = {limit}, sort_by: str = {sort_by}")
     markets = polymarket.get_all_markets()
     markets = polymarket.filter_markets_for_trading(markets)
+    
+    # Sort markets based on the specified criteria
     if sort_by == "spread":
-        markets = sorted(markets, key=lambda x: x.spread, reverse=True)
+        markets = sorted(markets, key=lambda x: x.spread)  # Lower spread is better
+    elif sort_by == "liquidity":
+        markets = sorted(markets, key=lambda x: x.liquidity, reverse=True)  # Higher liquidity is better
+    elif sort_by == "volume":
+        markets = sorted(markets, key=lambda x: x.volume, reverse=True)  # Higher volume is better
+    
     markets = markets[:limit]
     pprint(markets)
 
@@ -116,9 +128,57 @@ def ask_polymarket_llm(user_input: str) -> None:
 
 
 @app.command()
+def enhanced_analysis(market_id: int = None) -> None:
+    """
+    Run enhanced AI analysis with MCP tools on a specific market or the most liquid market
+    """
+    print("🚀 Enhanced Market Analysis with MCP Tools")
+    
+    if market_id:
+        print(f"📊 Analyzing specific market ID: {market_id}")
+        # TODO: Implement specific market lookup
+        market_data = polymarket.get_market_by_id(market_id)
+        if not market_data:
+            print(f"❌ Market {market_id} not found")
+            return
+        markets = [market_data]
+    else:
+        print("📊 Finding most liquid markets for analysis...")
+        all_markets = polymarket.get_all_markets()
+        markets = polymarket.filter_markets_for_trading(all_markets)
+        markets = sorted(markets, key=lambda x: x.liquidity, reverse=True)[:5]
+    
+    if not markets:
+        print("❌ No suitable markets found for analysis")
+        return
+    
+    # Use the first (most liquid) market
+    selected_market = markets[0]
+    print(f"🎯 Selected: {selected_market.question}")
+    print(f"💰 Liquidity: ${selected_market.liquidity:,.2f}")
+    
+    try:
+        # Run enhanced analysis
+        result = run_enhanced_analysis(selected_market)
+        
+        print("\n📋 Enhanced Analysis Results:")
+        print("=" * 60)
+        print(f"📈 Recommendation: {result.get('recommendation', 'UNKNOWN')}")
+        print(f"🎯 Confidence: {result.get('confidence', 0):.1%}")
+        print(f"🔗 Trace URL: {result.get('trace_url', 'Not available')}")
+        
+        reasoning = result.get('reasoning', 'No reasoning provided')
+        print(f"\n💭 Analysis Reasoning:")
+        print(reasoning[:1000] + "..." if len(reasoning) > 1000 else reasoning)
+        
+    except Exception as e:
+        print(f"❌ Enhanced analysis failed: {e}")
+
+
+@app.command()
 def run_autonomous_trader() -> None:
     """
-    Let an autonomous system trade for you.
+    Let an autonomous system trade for you using ONLY enhanced MCP analysis.
     """
     trader = Trader()
     trader.one_best_trade()

@@ -37,11 +37,14 @@ class SimpleMarket(BaseModel):
     # orderPriceMinTickSize: float
     rewardsMinSize: float
     rewardsMaxSpread: float
-    # volume: Optional[float]
+    volume: Optional[float] = 0.0
     spread: float
     outcomes: str
     outcome_prices: str
     clob_token_ids: Optional[str]
+    # New fields for better filtering
+    enableOrderBook: Optional[bool] = False
+    liquidity: Optional[float] = 0.0
 
 
 class ClobReward(BaseModel):
