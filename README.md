@@ -184,7 +184,7 @@ For those still using the old pip-based workflow:
 
 ## 🔄 Migration from pip to UV
 
-If you're upgrading from the old pip-based setup, see our comprehensive [Migration Guide](MIGRATION_UV.md) for step-by-step instructions.
+If you're upgrading from the old pip-based setup, see our comprehensive [Migration Guide](docs/development/MIGRATION_UV.md) for step-by-step instructions.
 
 ### 🎯 Using the Enhanced Agent
 
@@ -412,6 +412,21 @@ docker run -e MCP_REMOTE_ENDPOINT="..." polymarket-agents
 ## 📚 Examples
 
 See [`examples/example_enhanced_analysis.py`](examples/example_enhanced_analysis.py) for a complete working example.
+
+## 📖 Documentation
+
+Our documentation is organized into the following sections:
+
+### Core Documentation
+- [`docs/COMMANDS.md`](docs/COMMANDS.md) - Available CLI commands and usage
+- [`docs/EXAMPLE.md`](docs/EXAMPLE.md) - Detailed examples and tutorials  
+- [`docs/MONITORING.md`](docs/MONITORING.md) - Monitoring and observability guide
+
+### Development Documentation
+- [`docs/development/MIGRATION_UV.md`](docs/development/MIGRATION_UV.md) - Migration guide from pip to UV
+- [`docs/development/README_REFACTORING_SUMMARY.md`](docs/development/README_REFACTORING_SUMMARY.md) - Summary of recent refactoring changes
+- [`docs/development/REFACTORING_COMPLETE.md`](docs/development/REFACTORING_COMPLETE.md) - Complete refactoring details
+- [`docs/development/MCP_TEST_RESULTS.md`](docs/development/MCP_TEST_RESULTS.md) - MCP integration test results
 
 ## 🤝 Contributing
 
