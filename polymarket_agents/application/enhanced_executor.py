@@ -45,7 +45,7 @@ class MCPServerConfig:
 @dataclass
 class AgentConfig:
     """Configuration for OpenAI Agent"""
-    model: str = "gpt-4.1"  # Production-ready model
+    model: str = "o3-mini"  # Production-ready model
     temperature: float = 0.1
     max_tokens: int = 50000
     timeout: int = 120  # Longer timeout for MCP calls
@@ -137,15 +137,19 @@ class EnhancedExecutor(BaseExecutor):
             
             You have access to MCP tools that can help you gather market data, news, and analysis.
             Use these tools to make informed trading decisions.
-            Do NOT promise to call a  MCP tools later. If a function call is required, emit it now; otherwise respond normally.
-
-
+            
+            CRITICAL FUNCTION CALLING INSTRUCTIONS:
+            - Do NOT promise to call MCP tools later. If a function call is required, emit it now; otherwise respond normally.
+            - Be proactive in using tools to accomplish the analysis goal.
+            - Use tools when you need current market data, news, or technical analysis.
+            - Do NOT mention that you will call tools - just call them directly.
+            - If you cannot complete the analysis without external data, use the available tools immediately.
             
             When analyzing a market:
-            1. Gather relevant external data using available tools
-            2. Analyze current market pricing vs fair value
-            3. Consider external factors (news, price movements, etc.)
-            4. Assess risk/reward profile
+            1. Immediately gather relevant external data using available MCP tools
+            2. Analyze current market pricing vs fair value using the data
+            3. Consider external factors (news, price movements, etc.) from tool results
+            4. Assess risk/reward profile based on comprehensive data
             5. Provide a clear trade recommendation with confidence level
             
             Format your final recommendation as:
@@ -162,11 +166,24 @@ class EnhancedExecutor(BaseExecutor):
             # Only add temperature for models that support it (not o3 models)
             if not self.agent_config.model.startswith("o3"):
                 model_settings_params["temperature"] = self.agent_config.temperature
-                
+            
             model_settings = ModelSettings(**model_settings_params)
             
             # Create OpenAI Agent (with or without MCP)
             mcp_servers = [self.mcp_server] if self.mcp_server else []
+            
+            # For o3 models, use more aggressive tool prompting
+            if self.agent_config.model.startswith("o3") and mcp_servers:
+                # Add explicit tool boundary instructions for o3 models
+                instructions += """
+                
+                TOOL USAGE BOUNDARIES FOR O3 MODELS:
+                - Always use tools when analyzing markets - do not rely solely on training data
+                - Call tools immediately when you need current information
+                - Do not explain that you will call tools - just call them
+                - If multiple tools are available, use the most relevant ones for market analysis
+                """
+            
             agent = Agent(
                 name="Polymarket Trading Analyst",
                 instructions=instructions,
@@ -188,7 +205,10 @@ class EnhancedExecutor(BaseExecutor):
             - Spread: {market.spread:.1%}
             - Volume: ${market.volume:,.2f}
             
-            Use available MCP tools to gather relevant information, then provide your analysis.
+            IMPORTANT: Use your available MCP tools NOW to gather additional relevant information before making your analysis. 
+            Do not proceed without first calling the appropriate tools to get current market data, news, or technical analysis.
+            
+            After gathering the external data, provide your complete analysis and recommendation.
             """
             
             # Try MCP mode first, fall back to basic mode if needed
@@ -197,6 +217,10 @@ class EnhancedExecutor(BaseExecutor):
             
             if self.mcp_server:
                 try:
+                    # Log specific information for o3 models
+                    if self.agent_config.model.startswith("o3"):
+                        self.logger.info(f"Using o3 model ({self.agent_config.model}) with MCP tools - using explicit tool prompting")
+                    
                     async with self.mcp_server:
                         with trace(workflow_name="Polymarket Enhanced Analysis", trace_id=self.trace_id):
                             # Execute agent with retry logic

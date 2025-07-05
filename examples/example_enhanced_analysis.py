@@ -59,7 +59,7 @@ async def main():
     
     # Configure agent
     agent_config = AgentConfig(
-        model="gpt-4.1",
+        model="o3-mini",
         # temperature=0.1,
         max_tokens=50000,
         timeout=180,
