@@ -52,7 +52,7 @@ class Prompter:
         I believe {market_question} has a likelihood {float} for outcome of {outcome}.
         """
 
-    def prompts_polymarket(self, data1: str, data2: str) -> str:
+    def prompts_polymarket_general(self, data1: str, data2: str) -> str:
         current_market_data = str(data1)
         current_event_data = str(data2)
         return f"""

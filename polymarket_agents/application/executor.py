@@ -6,86 +6,113 @@ from typing import List, Dict, Any
 
 import math
 
-from dotenv import load_dotenv
-from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
+from openai import OpenAI
 
+from polymarket_agents.config import get_settings
+from polymarket_agents.common.utils import retain_keys, estimate_tokens, divide_list
+from polymarket_agents.common.errors import ConfigurationError
 from polymarket_agents.polymarket.gamma import GammaMarketClient as Gamma
 from polymarket_agents.connectors.chroma import PolymarketRAG as Chroma
 from polymarket_agents.utils.objects import SimpleEvent, SimpleMarket
 from polymarket_agents.application.prompts import Prompter
 from polymarket_agents.polymarket.polymarket import Polymarket
+from polymarket_agents.application.base_executor import BaseExecutor
 
-def retain_keys(data, keys_to_retain):
-    if isinstance(data, dict):
-        return {
-            key: retain_keys(value, keys_to_retain)
-            for key, value in data.items()
-            if key in keys_to_retain
-        }
-    elif isinstance(data, list):
-        return [retain_keys(item, keys_to_retain) for item in data]
-    else:
-        return data
-
-class Executor:
-    def __init__(self, default_model='gpt-3.5-turbo-16k') -> None:
-        load_dotenv()
-        max_token_model = {'gpt-3.5-turbo-16k':15000, 'gpt-4-1106-preview':95000}
-        self.token_limit = max_token_model.get(default_model)
-        self.prompter = Prompter()
-        self.openai_api_key = os.getenv("OPENAI_API_KEY")
-        self.llm = ChatOpenAI(
-            model=default_model, #gpt-3.5-turbo"
-            temperature=0,
-        )
-        self.gamma = Gamma()
+class Executor(BaseExecutor):
+    def __init__(self, default_model='gpt-4o', settings=None) -> None:
+        # Initialize base executor with settings
+        super().__init__(settings)
+        
+        # Model configuration
+        self.default_model = default_model
+        max_token_model = {'gpt-3.5-turbo-16k': 15000, 'gpt-4-1106-preview': 95000, 'gpt-4o': 50000}
+        self.token_limit = max_token_model.get(default_model, 50000)
+        
+        # Initialize OpenAI client
+        self.openai_client = OpenAI(api_key=self.settings.openai_api_key)
+        
+        # Initialize connectors
         self.chroma = Chroma()
-        self.polymarket = Polymarket()
 
     def get_llm_response(self, user_input: str) -> str:
-        system_message = SystemMessage(content=str(self.prompter.market_analyst()))
-        human_message = HumanMessage(content=user_input)
-        messages = [system_message, human_message]
-        result = self.llm.invoke(messages)
-        return result.content
+        """Get LLM response using direct OpenAI SDK."""
+        messages = [
+            {"role": "system", "content": str(self.prompter.market_analyst())},
+            {"role": "user", "content": user_input}
+        ]
+        
+        try:
+            response = self.openai_client.chat.completions.create(
+                model=self.default_model,
+                messages=messages,
+                temperature=self.settings.openai_temperature,
+                max_tokens=self.settings.openai_max_tokens
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            self.logger.error(f"Error getting LLM response: {e}")
+            raise
 
     def get_superforecast(
         self, event_title: str, market_question: str, outcome: str
     ) -> str:
-        messages = self.prompter.superforecaster(
+        """Get superforecast using direct OpenAI SDK."""
+        prompt = self.prompter.superforecaster(
             description=event_title, question=market_question, outcome=outcome
         )
-        result = self.llm.invoke(messages)
-        return result.content
+        
+        messages = [
+            {"role": "system", "content": prompt}
+        ]
+        
+        try:
+            response = self.openai_client.chat.completions.create(
+                model=self.default_model,
+                messages=messages,
+                temperature=self.settings.openai_temperature,
+                max_tokens=self.settings.openai_max_tokens
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            self.logger.error(f"Error getting superforecast: {e}")
+            raise
 
 
     def estimate_tokens(self, text: str) -> int:
-        # This is a rough estimate. For more accurate results, consider using a tokenizer.
-        return len(text) // 4  # Assuming average of 4 characters per token
+        """Estimate tokens using shared utility function."""
+        return estimate_tokens(text)
 
     def process_data_chunk(self, data1: List[Dict[Any, Any]], data2: List[Dict[Any, Any]], user_input: str) -> str:
-        system_message = SystemMessage(
-            content=str(self.prompter.prompts_polymarket(data1=data1, data2=data2))
-        )
-        human_message = HumanMessage(content=user_input)
-        messages = [system_message, human_message]
-        result = self.llm.invoke(messages)
-        return result.content
+        """Process data chunk using direct OpenAI SDK."""
+        system_content = str(self.prompter.prompts_polymarket_general(data1=data1, data2=data2))
+        
+        messages = [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": user_input}
+        ]
+        
+        try:
+            response = self.openai_client.chat.completions.create(
+                model=self.default_model,
+                messages=messages,
+                temperature=self.settings.openai_temperature,
+                max_tokens=self.settings.openai_max_tokens
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            self.logger.error(f"Error processing data chunk: {e}")
+            raise
 
 
     def divide_list(self, original_list, i):
-        # Calculate the size of each sublist
-        sublist_size = math.ceil(len(original_list) / i)
-        
-        # Use list comprehension to create sublists
-        return [original_list[j:j+sublist_size] for j in range(0, len(original_list), sublist_size)]
+        """Divide list using shared utility function."""
+        return divide_list(original_list, i)
     
     def get_polymarket_llm(self, user_input: str) -> str:
         data1 = self.gamma.get_current_events()
         data2 = self.gamma.get_current_markets()
         
-        combined_data = str(self.prompter.prompts_polymarket(data1=data1, data2=data2))
+        combined_data = str(self.prompter.prompts_polymarket_general(data1=data1, data2=data2))
         
         # Estimate total tokens
         total_tokens = self.estimate_tokens(combined_data)
@@ -112,7 +139,7 @@ class Executor:
             for cut_data in cut_data_12:
                 sub_data1 = cut_data[0]
                 sub_data2 = cut_data[1]
-                sub_tokens = self.estimate_tokens(str(self.prompter.prompts_polymarket(data1=sub_data1, data2=sub_data2)))
+                sub_tokens = self.estimate_tokens(str(self.prompter.prompts_polymarket_general(data1=sub_data1, data2=sub_data2)))
 
                 result = self.process_data_chunk(sub_data1, sub_data2, user_input)
                 results.append(result)
@@ -123,9 +150,20 @@ class Executor:
             
             return combined_result
     def filter_events(self, events: "list[SimpleEvent]") -> str:
-        prompt = self.prompter.filter_events(events)
-        result = self.llm.invoke(prompt)
-        return result.content
+        """Filter events using direct OpenAI SDK."""
+        prompt = self.prompter.filter_events()
+        
+        try:
+            response = self.openai_client.chat.completions.create(
+                model=self.default_model,
+                messages=[{"role": "system", "content": prompt}],
+                temperature=self.settings.openai_temperature,
+                max_tokens=self.settings.openai_max_tokens
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            self.logger.error(f"Error filtering events: {e}")
+            raise
 
     def filter_events_with_rag(self, events: "list[SimpleEvent]") -> str:
         # Handle empty events list
@@ -191,20 +229,35 @@ class Executor:
             question = market["question"]
             description = market_document["page_content"]
 
+            # Get superforecaster prediction
             prompt = self.prompter.superforecaster(question, description, outcomes)
             print()
             print("... prompting ... ", prompt)
             print()
-            result = self.llm.invoke(prompt)
-            content = result.content
+            
+            response = self.openai_client.chat.completions.create(
+                model=self.default_model,
+                messages=[{"role": "system", "content": prompt}],
+                temperature=self.settings.openai_temperature,
+                max_tokens=self.settings.openai_max_tokens
+            )
+            content = response.choices[0].message.content
 
             print("result: ", content)
             print()
-            prompt = self.prompter.one_best_trade(content, outcomes, outcome_prices)
-            print("... prompting ... ", prompt)
+            
+            # Get trading recommendation
+            trade_prompt = self.prompter.one_best_trade(content, outcomes, outcome_prices)
+            print("... prompting ... ", trade_prompt)
             print()
-            result = self.llm.invoke(prompt)
-            content = result.content
+            
+            response = self.openai_client.chat.completions.create(
+                model=self.default_model,
+                messages=[{"role": "system", "content": trade_prompt}],
+                temperature=self.settings.openai_temperature,
+                max_tokens=self.settings.openai_max_tokens
+            )
+            content = response.choices[0].message.content
 
             print("result: ", content)
             return content
@@ -242,15 +295,65 @@ class Executor:
         if not filtered_markets:
             print("Warning: Empty filtered_markets provided to source_best_market_to_create()")
             return "No market to create"
-            
+    
+    async def analyze_market(self, market: SimpleMarket) -> Dict[str, Any]:
+        """
+        Implement the abstract method from BaseExecutor.
+        This is a basic implementation using existing LLM methods.
+        """
         try:
-            prompt = self.prompter.create_new_market(filtered_markets)
-            print()
-            print("... prompting ... ", prompt)
-            print()
-            result = self.llm.invoke(prompt)
-            content = result.content
-            return content
+            context = self.get_market_analysis_context(market)
+            
+            # Use the superforecaster method for analysis
+            if market.outcomes and len(market.outcomes) > 0:
+                # Analyze each outcome
+                analysis_results = []
+                for outcome in market.outcomes:
+                    try:
+                        forecast = self.get_superforecast(
+                            market.description or market.question,
+                            market.question,
+                            outcome
+                        )
+                        analysis_results.append({
+                            "outcome": outcome,
+                            "forecast": forecast
+                        })
+                    except Exception as e:
+                        self.logger.warning(f"Error forecasting outcome {outcome}: {e}")
+                        analysis_results.append({
+                            "outcome": outcome,
+                            "forecast": "Analysis failed",
+                            "error": str(e)
+                        })
+                
+                return {
+                    "market_id": market.id,
+                    "question": market.question,
+                    "recommendation": "ANALYZE",  # This executor is for analysis
+                    "confidence": 0.7,
+                    "reasoning": "Analysis using superforecaster methodology",
+                    "analysis_type": "basic_llm",
+                    "forecasts": analysis_results,
+                    "context": context
+                }
+            else:
+                return {
+                    "market_id": market.id,
+                    "question": market.question,
+                    "recommendation": "HOLD",
+                    "confidence": 0.0,
+                    "reasoning": "No outcomes available for analysis",
+                    "analysis_type": "basic_llm",
+                    "context": context
+                }
+                
         except Exception as e:
-            print(f"Error in source_best_market_to_create: {e}")
-            return "No market to create"
+            self.logger.error(f"Error analyzing market {market.id}: {e}")
+            return {
+                "error": str(e),
+                "market_id": market.id,
+                "recommendation": "HOLD",
+                "confidence": 0.0,
+                "analysis_type": "error"
+                         }

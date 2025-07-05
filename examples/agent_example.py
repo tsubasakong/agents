@@ -8,7 +8,7 @@ from openai import OpenAI, OpenAIError
 from agents import Agent as OpenAIAgent, Runner, gen_trace_id, trace, ModelSettings
 from agents.mcp import MCPServerSse
 from agents.extensions.models.litellm_model import LitellmModel
-from src.config.settings import Settings
+from polymarket_agents.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +91,7 @@ class AgentManager:
             client_session_timeout_seconds=60,
         )
 
-        self.instructions = instructions or Settings().get_agent_instructions()
+        self.instructions = instructions or get_settings().get_agent_instructions()
         self.retry_config = retry_config or RetryConfig()
 
         # Only initialize OpenAI client for OpenAI provider
@@ -239,7 +239,7 @@ def create_agent_manager(
                   (e.g., instructions, retry_config, context, enable_mcp_cache).
     """
 
-    config = Settings().get_openai_config()
+    config = get_settings().get_openai_config()
 
     if agent_config_override:
         config.update(agent_config_override)
